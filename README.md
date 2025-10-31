@@ -161,31 +161,645 @@ Complete workflow that generates both account creation and transfer transactions
 
 **Returns:** Object with `accountCreationTxs` and `transferTxs` arrays
 
-## Usage Examples
+## Detailed Usage Examples
 
-### Variable Amounts
+### Example 1: Basic SOL Transfer with Error Handling
 
 ```typescript
-// Different amounts for each recipient
+import { Connection, Keypair, PublicKey, LAMPORTS_PER_SOL } from '@solana/web3.js';
+import { generateBulkSolTransactions } from './bulk';
+
+async function sendBulkSol() {
+  const connection = new Connection('https://api.devnet.solana.com');
+  const sender = Keypair.generate(); // Load your keypair
+
+  // Send 0.1 SOL to each recipient
+  const transactions = generateBulkSolTransactions({
+    sender: sender.publicKey,
+    recipients: [
+      'HN7cABqLq46Es1jh92dQQisAq662SmxELLLsHHe4YWrH',
+      '8gC3pyoD8QXRhVFsGZg5bXd7kFZ7YqWPvCFkqVPDhQCj',
+      'CuieVDEDtLo7FypA9SbLM9saXFdb1dsshEkyErMqkRQq',
+    ],
+    fixedAmount: 0.1 * LAMPORTS_PER_SOL,
+    memo: 'Airdrop payment',
+  });
+
+  console.log(`Created ${transactions.length} transactions`);
+
+  // Sign and send each transaction
+  for (let i = 0; i < transactions.length; i++) {
+    const tx = transactions[i];
+
+    try {
+      const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash();
+      tx.recentBlockhash = blockhash;
+      tx.feePayer = sender.publicKey;
+      tx.sign(sender);
+
+      const signature = await connection.sendRawTransaction(tx.serialize());
+      console.log(`Transaction ${i + 1}/${transactions.length}: ${signature}`);
+
+      // Wait for confirmation
+      await connection.confirmTransaction({
+        signature,
+        blockhash,
+        lastValidBlockHeight,
+      });
+
+      console.log(`✅ Confirmed: ${signature}`);
+    } catch (error) {
+      console.error(`❌ Transaction ${i + 1} failed:`, error);
+      // Continue with next transaction even if one fails
+    }
+  }
+}
+```
+
+### Example 2: Variable SOL Amounts
+
+```typescript
+import { Connection, Keypair, LAMPORTS_PER_SOL } from '@solana/web3.js';
+import { generateBulkSolTransactions } from './bulk';
+
+// Different amounts for each recipient (e.g., reward distribution)
 const transactions = generateBulkSolTransactions({
   sender: sender.publicKey,
   transfers: [
-    { recipient: 'address1', amount: 1_000_000 },
-    { recipient: 'address2', amount: 2_000_000 },
-    { recipient: 'address3', amount: 500_000 },
+    { recipient: 'HN7cABqLq46Es1jh92dQQisAq662SmxELLLsHHe4YWrH', amount: 1 * LAMPORTS_PER_SOL },      // 1 SOL
+    { recipient: '8gC3pyoD8QXRhVFsGZg5bXd7kFZ7YqWPvCFkqVPDhQCj', amount: 0.5 * LAMPORTS_PER_SOL },    // 0.5 SOL
+    { recipient: 'CuieVDEDtLo7FypA9SbLM9saXFdb1dsshEkyErMqkRQq', amount: 0.25 * LAMPORTS_PER_SOL },   // 0.25 SOL
   ],
+  memo: 'Competition rewards',
 });
 ```
 
-### Fixed Amount
+### Example 3: SPL Token Transfer with Decimal Conversion
 
 ```typescript
-// Same amount for all recipients
-const transactions = generateBulkSolTransactions({
+import { Connection, Keypair, PublicKey } from '@solana/web3.js';
+import { getMint } from '@solana/spl-token';
+import { generateCompleteBulkSplTransactions } from './bulk';
+
+async function sendBulkTokens() {
+  const connection = new Connection('https://api.devnet.solana.com');
+  const sender = Keypair.generate(); // Load your keypair
+  const mintAddress = new PublicKey('EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v'); // USDC mint
+
+  // Get token decimals to convert human-readable amounts
+  const mintInfo = await getMint(connection, mintAddress);
+  const decimals = mintInfo.decimals;
+  console.log(`Token has ${decimals} decimals`);
+
+  // Send 100 tokens to each recipient
+  const humanAmount = 100;
+  const rawAmount = humanAmount * Math.pow(10, decimals);
+
+  const { accountCreationTxs, transferTxs } = await generateCompleteBulkSplTransactions(
+    connection,
+    {
+      sender: sender.publicKey,
+      mint: mintAddress,
+      recipients: [
+        'HN7cABqLq46Es1jh92dQQisAq662SmxELLLsHHe4YWrH',
+        '8gC3pyoD8QXRhVFsGZg5bXd7kFZ7YqWPvCFkqVPDhQCj',
+        'CuieVDEDtLo7FypA9SbLM9saXFdb1dsshEkyErMqkRQq',
+      ],
+      fixedAmount: rawAmount,
+      memo: 'USDC distribution',
+    }
+  );
+
+  console.log(`Account creation txs: ${accountCreationTxs.length}`);
+  console.log(`Transfer txs: ${transferTxs.length}`);
+
+  // Phase 1: Create token accounts
+  for (let i = 0; i < accountCreationTxs.length; i++) {
+    const tx = accountCreationTxs[i];
+    const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash();
+    tx.recentBlockhash = blockhash;
+    tx.feePayer = sender.publicKey;
+    tx.sign(sender);
+
+    const signature = await connection.sendRawTransaction(tx.serialize());
+    await connection.confirmTransaction({ signature, blockhash, lastValidBlockHeight });
+    console.log(`✅ Account creation ${i + 1}/${accountCreationTxs.length}: ${signature}`);
+  }
+
+  // Phase 2: Transfer tokens
+  for (let i = 0; i < transferTxs.length; i++) {
+    const tx = transferTxs[i];
+    const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash();
+    tx.recentBlockhash = blockhash;
+    tx.feePayer = sender.publicKey;
+    tx.sign(sender);
+
+    const signature = await connection.sendRawTransaction(tx.serialize());
+    await connection.confirmTransaction({ signature, blockhash, lastValidBlockHeight });
+    console.log(`✅ Transfer ${i + 1}/${transferTxs.length}: ${signature}`);
+  }
+}
+```
+
+### Example 4: SPL Token with Variable Amounts
+
+```typescript
+import { Connection, Keypair, PublicKey } from '@solana/web3.js';
+import { getMint } from '@solana/spl-token';
+import { generateCompleteBulkSplTransactions } from './bulk';
+
+async function sendVariableTokenAmounts() {
+  const connection = new Connection('https://api.devnet.solana.com');
+  const sender = Keypair.generate();
+  const mintAddress = new PublicKey('So11111111111111111111111111111111111111112'); // Wrapped SOL
+
+  const mintInfo = await getMint(connection, mintAddress);
+  const decimals = mintInfo.decimals;
+
+  // Convert human-readable amounts to raw amounts
+  const toRawAmount = (amount: number) => amount * Math.pow(10, decimals);
+
+  const { accountCreationTxs, transferTxs } = await generateCompleteBulkSplTransactions(
+    connection,
+    {
+      sender: sender.publicKey,
+      mint: mintAddress,
+      transfers: [
+        { recipient: 'HN7cABqLq46Es1jh92dQQisAq662SmxELLLsHHe4YWrH', amount: toRawAmount(10) },
+        { recipient: '8gC3pyoD8QXRhVFsGZg5bXd7kFZ7YqWPvCFkqVPDhQCj', amount: toRawAmount(20) },
+        { recipient: 'CuieVDEDtLo7FypA9SbLM9saXFdb1dsshEkyErMqkRQq', amount: toRawAmount(15) },
+      ],
+      memo: 'Payroll distribution',
+    }
+  );
+
+  // Send transactions (same pattern as Example 3)
+}
+```
+
+### Example 5: Large-Scale Airdrop (1000+ Recipients)
+
+```typescript
+import { Connection, Keypair, LAMPORTS_PER_SOL } from '@solana/web3.js';
+import { generateBulkSolTransactions } from './bulk';
+
+async function largeScaleAirdrop() {
+  const connection = new Connection('https://api.mainnet-beta.solana.com');
+  const sender = Keypair.generate();
+
+  // Load 1000 recipient addresses from a file or database
+  const recipients = [
+    // ... 1000 addresses
+  ];
+
+  const transactions = generateBulkSolTransactions({
+    sender: sender.publicKey,
+    recipients,
+    fixedAmount: 0.01 * LAMPORTS_PER_SOL, // 0.01 SOL each
+    instructionsPerTx: 18,
+    memo: 'NFT holder airdrop',
+  });
+
+  console.log(`Sending to ${recipients.length} recipients`);
+  console.log(`Total transactions: ${transactions.length}`);
+  console.log(`Estimated fee: ${transactions.length * 0.000005} SOL`);
+  console.log(`Total cost: ${(recipients.length * 0.01) + (transactions.length * 0.000005)} SOL`);
+
+  let successCount = 0;
+  let failCount = 0;
+
+  for (let i = 0; i < transactions.length; i++) {
+    const tx = transactions[i];
+
+    try {
+      const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash();
+      tx.recentBlockhash = blockhash;
+      tx.feePayer = sender.publicKey;
+      tx.sign(sender);
+
+      const signature = await connection.sendRawTransaction(tx.serialize(), {
+        skipPreflight: false,
+        maxRetries: 3,
+      });
+
+      await connection.confirmTransaction({
+        signature,
+        blockhash,
+        lastValidBlockHeight,
+      });
+
+      successCount++;
+      console.log(`[${i + 1}/${transactions.length}] ✅ Success: ${signature}`);
+
+      // Rate limiting to avoid overwhelming the RPC
+      await new Promise(resolve => setTimeout(resolve, 500));
+
+    } catch (error) {
+      failCount++;
+      console.error(`[${i + 1}/${transactions.length}] ❌ Failed:`, error.message);
+    }
+  }
+
+  console.log(`\nResults: ${successCount} succeeded, ${failCount} failed`);
+}
+```
+
+### Example 6: Custom Batch Size Configuration
+
+```typescript
+import { generateBulkSolTransactions } from './bulk';
+
+// Smaller batch size for better reliability (more transactions, lower failure risk)
+const conservativeTxs = generateBulkSolTransactions({
   sender: sender.publicKey,
-  recipients: ['address1', 'address2', 'address3'],
-  fixedAmount: 1_000_000, // 0.001 SOL
+  recipients: recipients,
+  fixedAmount: 1_000_000,
+  instructionsPerTx: 10, // Smaller batches = more headroom
+  memo: 'Conservative batch',
 });
+
+// Larger batch size for cost efficiency (fewer transactions, higher compute)
+const aggressiveTxs = generateBulkSolTransactions({
+  sender: sender.publicKey,
+  recipients: recipients,
+  fixedAmount: 1_000_000,
+  instructionsPerTx: 18, // Maximum recommended
+  memo: 'Aggressive batch',
+});
+
+console.log(`Conservative: ${conservativeTxs.length} txs`);
+console.log(`Aggressive: ${aggressiveTxs.length} txs`);
+```
+
+### Example 7: Checking Token Account Existence Before Transfer
+
+```typescript
+import { Connection, PublicKey } from '@solana/web3.js';
+import { getAssociatedTokenAddress } from '@solana/spl-token';
+import { generateTokenAccountCreationTransactions, generateBulkSplTransactions } from './bulk';
+
+async function checkAndCreateAccounts() {
+  const connection = new Connection('https://api.devnet.solana.com');
+  const mint = new PublicKey('YourMintAddress');
+  const recipients = ['address1', 'address2', 'address3'];
+
+  // Manually check which accounts exist
+  const accountChecks = await Promise.all(
+    recipients.map(async (recipient) => {
+      const recipientPubkey = new PublicKey(recipient);
+      const ata = await getAssociatedTokenAddress(mint, recipientPubkey);
+      const accountInfo = await connection.getAccountInfo(ata);
+      return {
+        recipient,
+        exists: accountInfo !== null,
+        ata: ata.toString(),
+      };
+    })
+  );
+
+  const existingAccounts = accountChecks.filter(a => a.exists);
+  const missingAccounts = accountChecks.filter(a => !a.exists);
+
+  console.log(`Existing accounts: ${existingAccounts.length}`);
+  console.log(`Missing accounts: ${missingAccounts.length}`);
+
+  // Only create accounts that are missing
+  if (missingAccounts.length > 0) {
+    const creationTxs = await generateTokenAccountCreationTransactions(
+      connection,
+      mint,
+      sender.publicKey,
+      missingAccounts.map(a => a.recipient),
+      12
+    );
+    console.log(`Will create ${missingAccounts.length} accounts in ${creationTxs.length} txs`);
+  }
+}
+```
+
+## Real-World Use Cases
+
+### Use Case 1: NFT Holder Airdrop
+
+```typescript
+import { Connection, Keypair, LAMPORTS_PER_SOL } from '@solana/web3.js';
+import { generateBulkSolTransactions } from './bulk';
+
+async function nftHolderAirdrop() {
+  const connection = new Connection('https://api.mainnet-beta.solana.com');
+  const sender = Keypair.generate(); // Your treasury wallet
+
+  // Get NFT holders from your collection (using a service like Helius, SimpleHash, etc.)
+  const nftHolders = [
+    'Holder1Address...',
+    'Holder2Address...',
+    // ... more holders
+  ];
+
+  // Airdrop 0.05 SOL to each NFT holder
+  const transactions = generateBulkSolTransactions({
+    sender: sender.publicKey,
+    recipients: nftHolders,
+    fixedAmount: 0.05 * LAMPORTS_PER_SOL,
+    instructionsPerTx: 18,
+    memo: 'Thank you for holding our NFT! 🎁',
+  });
+
+  console.log(`Airdropping to ${nftHolders.length} holders`);
+  console.log(`Total amount: ${nftHolders.length * 0.05} SOL`);
+  console.log(`Transaction fee: ~${transactions.length * 0.000005} SOL`);
+
+  // Execute transactions with progress tracking
+  for (let i = 0; i < transactions.length; i++) {
+    const tx = transactions[i];
+    const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash();
+    tx.recentBlockhash = blockhash;
+    tx.feePayer = sender.publicKey;
+    tx.sign(sender);
+
+    const signature = await connection.sendRawTransaction(tx.serialize());
+    await connection.confirmTransaction({ signature, blockhash, lastValidBlockHeight });
+
+    console.log(`Progress: ${((i + 1) / transactions.length * 100).toFixed(1)}% | Tx: ${signature}`);
+  }
+}
+```
+
+### Use Case 2: Monthly Payroll Distribution
+
+```typescript
+import { Connection, Keypair, PublicKey } from '@solana/web3.js';
+import { getMint } from '@solana/spl-token';
+import { generateCompleteBulkSplTransactions } from './bulk';
+
+async function monthlyPayroll() {
+  const connection = new Connection('https://api.mainnet-beta.solana.com');
+  const treasury = Keypair.generate();
+  const usdcMint = new PublicKey('EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v');
+
+  // Get USDC decimals (6 for USDC)
+  const mintInfo = await getMint(connection, usdcMint);
+  const decimals = mintInfo.decimals;
+
+  // Employee payroll data
+  const payroll = [
+    { employee: 'Employee1Address...', monthlySalary: 5000 },   // $5,000
+    { employee: 'Employee2Address...', monthlySalary: 7500 },   // $7,500
+    { employee: 'Employee3Address...', monthlySalary: 10000 },  // $10,000
+  ];
+
+  const transfers = payroll.map(p => ({
+    recipient: p.employee,
+    amount: p.monthlySalary * Math.pow(10, decimals), // Convert to raw amount
+  }));
+
+  const { accountCreationTxs, transferTxs } = await generateCompleteBulkSplTransactions(
+    connection,
+    {
+      sender: treasury.publicKey,
+      mint: usdcMint,
+      transfers,
+      memo: `Payroll - ${new Date().toISOString().slice(0, 7)}`, // e.g., "Payroll - 2024-03"
+    }
+  );
+
+  // Create accounts if needed
+  for (const tx of accountCreationTxs) {
+    const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash();
+    tx.recentBlockhash = blockhash;
+    tx.feePayer = treasury.publicKey;
+    tx.sign(treasury);
+    const sig = await connection.sendRawTransaction(tx.serialize());
+    await connection.confirmTransaction({ signature: sig, blockhash, lastValidBlockHeight });
+  }
+
+  // Send payroll
+  for (const tx of transferTxs) {
+    const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash();
+    tx.recentBlockhash = blockhash;
+    tx.feePayer = treasury.publicKey;
+    tx.sign(treasury);
+    const sig = await connection.sendRawTransaction(tx.serialize());
+    await connection.confirmTransaction({ signature: sig, blockhash, lastValidBlockHeight });
+  }
+
+  const totalPayout = payroll.reduce((sum, p) => sum + p.monthlySalary, 0);
+  console.log(`✅ Payroll complete! Total: $${totalPayout.toLocaleString()}`);
+}
+```
+
+### Use Case 3: Refund Distribution
+
+```typescript
+import { Connection, Keypair, LAMPORTS_PER_SOL } from '@solana/web3.js';
+import { generateBulkSolTransactions } from './bulk';
+
+async function refundDistribution() {
+  const connection = new Connection('https://api.mainnet-beta.solana.com');
+  const refundWallet = Keypair.generate();
+
+  // Users who purchased tickets for a cancelled event
+  const refundData = [
+    { user: 'User1Address...', ticketsPurchased: 2, pricePerTicket: 0.5 },
+    { user: 'User2Address...', ticketsPurchased: 1, pricePerTicket: 0.5 },
+    { user: 'User3Address...', ticketsPurchased: 4, pricePerTicket: 0.5 },
+  ];
+
+  const transfers = refundData.map(r => ({
+    recipient: r.user,
+    amount: Math.floor(r.ticketsPurchased * r.pricePerTicket * LAMPORTS_PER_SOL),
+  }));
+
+  const transactions = generateBulkSolTransactions({
+    sender: refundWallet.publicKey,
+    transfers,
+    memo: 'Event cancellation refund',
+  });
+
+  console.log(`Refunding ${refundData.length} users`);
+
+  for (const tx of transactions) {
+    const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash();
+    tx.recentBlockhash = blockhash;
+    tx.feePayer = refundWallet.publicKey;
+    tx.sign(refundWallet);
+
+    const sig = await connection.sendRawTransaction(tx.serialize());
+    await connection.confirmTransaction({ signature: sig, blockhash, lastValidBlockHeight });
+    console.log(`Refund sent: ${sig}`);
+  }
+}
+```
+
+### Use Case 4: Token Launch Airdrop to Early Supporters
+
+```typescript
+import { Connection, Keypair, PublicKey } from '@solana/web3.js';
+import { getMint } from '@solana/spl-token';
+import { generateCompleteBulkSplTransactions } from './bulk';
+
+async function tokenLaunchAirdrop() {
+  const connection = new Connection('https://api.mainnet-beta.solana.com');
+  const projectTreasury = Keypair.generate();
+  const projectTokenMint = new PublicKey('YourNewTokenMintAddress');
+
+  const mintInfo = await getMint(connection, projectTokenMint);
+  const decimals = mintInfo.decimals;
+
+  // Tiered airdrop for different supporter levels
+  const airdropTiers = {
+    earlyBacker: { amount: 10000, recipients: [] },      // 10,000 tokens
+    contributor: { amount: 5000, recipients: [] },       // 5,000 tokens
+    community: { amount: 1000, recipients: [] },         // 1,000 tokens
+  };
+
+  // Combine all tiers into transfers array
+  const transfers = [
+    ...airdropTiers.earlyBacker.recipients.map(r => ({
+      recipient: r,
+      amount: airdropTiers.earlyBacker.amount * Math.pow(10, decimals),
+    })),
+    ...airdropTiers.contributor.recipients.map(r => ({
+      recipient: r,
+      amount: airdropTiers.contributor.amount * Math.pow(10, decimals),
+    })),
+    ...airdropTiers.community.recipients.map(r => ({
+      recipient: r,
+      amount: airdropTiers.community.amount * Math.pow(10, decimals),
+    })),
+  ];
+
+  const { accountCreationTxs, transferTxs } = await generateCompleteBulkSplTransactions(
+    connection,
+    {
+      sender: projectTreasury.publicKey,
+      mint: projectTokenMint,
+      transfers,
+      memo: 'Thank you for your early support! 🚀',
+    }
+  );
+
+  console.log(`Airdropping to ${transfers.length} supporters`);
+  console.log(`Account creation txs: ${accountCreationTxs.length}`);
+  console.log(`Transfer txs: ${transferTxs.length}`);
+
+  // Execute account creation
+  for (const tx of accountCreationTxs) {
+    const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash();
+    tx.recentBlockhash = blockhash;
+    tx.feePayer = projectTreasury.publicKey;
+    tx.sign(projectTreasury);
+    const sig = await connection.sendRawTransaction(tx.serialize());
+    await connection.confirmTransaction({ signature: sig, blockhash, lastValidBlockHeight });
+  }
+
+  // Execute transfers
+  for (const tx of transferTxs) {
+    const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash();
+    tx.recentBlockhash = blockhash;
+    tx.feePayer = projectTreasury.publicKey;
+    tx.sign(projectTreasury);
+    const sig = await connection.sendRawTransaction(tx.serialize());
+    await connection.confirmTransaction({ signature: sig, blockhash, lastValidBlockHeight });
+  }
+}
+```
+
+### Use Case 5: Competition Prize Distribution
+
+```typescript
+import { Connection, Keypair, LAMPORTS_PER_SOL } from '@solana/web3.js';
+import { generateBulkSolTransactions } from './bulk';
+
+async function competitionPrizes() {
+  const connection = new Connection('https://api.mainnet-beta.solana.com');
+  const prizePool = Keypair.generate();
+
+  // Competition winners with different prize amounts
+  const winners = [
+    { rank: 1, wallet: 'FirstPlaceAddress...', prize: 10 },    // 10 SOL
+    { rank: 2, wallet: 'SecondPlaceAddress...', prize: 5 },    // 5 SOL
+    { rank: 3, wallet: 'ThirdPlaceAddress...', prize: 2.5 },   // 2.5 SOL
+    // ... more winners
+  ];
+
+  const transfers = winners.map(w => ({
+    recipient: w.wallet,
+    amount: Math.floor(w.prize * LAMPORTS_PER_SOL),
+  }));
+
+  const transactions = generateBulkSolTransactions({
+    sender: prizePool.publicKey,
+    transfers,
+    memo: 'Competition prizes - Congratulations! 🏆',
+  });
+
+  let distributed = 0;
+
+  for (let i = 0; i < transactions.length; i++) {
+    const tx = transactions[i];
+    const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash();
+    tx.recentBlockhash = blockhash;
+    tx.feePayer = prizePool.publicKey;
+    tx.sign(prizePool);
+
+    const sig = await connection.sendRawTransaction(tx.serialize());
+    await connection.confirmTransaction({ signature: sig, blockhash, lastValidBlockHeight });
+
+    distributed++;
+    console.log(`Distributed ${distributed}/${winners.length} prizes | Tx: ${sig}`);
+  }
+
+  const totalPrizes = winners.reduce((sum, w) => sum + w.prize, 0);
+  console.log(`\n✅ All prizes distributed! Total: ${totalPrizes} SOL`);
+}
+```
+
+### Use Case 6: Reading Recipients from CSV File
+
+```typescript
+import { Connection, Keypair, LAMPORTS_PER_SOL } from '@solana/web3.js';
+import { readFileSync } from 'fs';
+import { parse } from 'csv-parse/sync';
+import { generateBulkSolTransactions } from './bulk';
+
+async function airdropFromCSV() {
+  const connection = new Connection('https://api.devnet.solana.com');
+  const sender = Keypair.generate();
+
+  // Read recipients from CSV file
+  // Format: wallet_address,amount
+  const csvContent = readFileSync('./recipients.csv', 'utf-8');
+  const records = parse(csvContent, {
+    columns: true,
+    skip_empty_lines: true,
+  });
+
+  const transfers = records.map(record => ({
+    recipient: record.wallet_address,
+    amount: parseFloat(record.amount) * LAMPORTS_PER_SOL,
+  }));
+
+  console.log(`Loaded ${transfers.length} recipients from CSV`);
+
+  const transactions = generateBulkSolTransactions({
+    sender: sender.publicKey,
+    transfers,
+    memo: 'CSV bulk transfer',
+  });
+
+  // Execute transactions
+  for (const tx of transactions) {
+    const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash();
+    tx.recentBlockhash = blockhash;
+    tx.feePayer = sender.publicKey;
+    tx.sign(sender);
+
+    const sig = await connection.sendRawTransaction(tx.serialize());
+    await connection.confirmTransaction({ signature: sig, blockhash, lastValidBlockHeight });
+    console.log(`✅ ${sig}`);
+  }
+}
 ```
 
 ## How It Works
@@ -467,6 +1081,404 @@ interface IBulkSplTransferConfig {
 }
 ```
 
+## Common Errors and Troubleshooting
+
+### Error: "Blockhash not found"
+
+This means the blockhash expired before the transaction was processed.
+
+**Solution:**
+```typescript
+// Use lastValidBlockHeight for better confirmation
+const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash();
+tx.recentBlockhash = blockhash;
+tx.feePayer = sender.publicKey;
+tx.sign(sender);
+
+const signature = await connection.sendRawTransaction(tx.serialize(), {
+  maxRetries: 3,
+});
+
+await connection.confirmTransaction({
+  signature,
+  blockhash,
+  lastValidBlockHeight,
+});
+```
+
+### Error: "Transaction simulation failed"
+
+This usually means insufficient balance or invalid recipient addresses.
+
+**Solution:**
+```typescript
+try {
+  // Use skipPreflight: false to get detailed error messages
+  const signature = await connection.sendRawTransaction(tx.serialize(), {
+    skipPreflight: false,
+    maxRetries: 3,
+  });
+
+  await connection.confirmTransaction(signature);
+} catch (error) {
+  console.error('Transaction failed:', error);
+
+  // Check sender balance
+  const balance = await connection.getBalance(sender.publicKey);
+  console.log(`Sender balance: ${balance / LAMPORTS_PER_SOL} SOL`);
+
+  // Verify recipient addresses
+  recipients.forEach((recipient, i) => {
+    try {
+      new PublicKey(recipient);
+    } catch {
+      console.error(`Invalid address at index ${i}: ${recipient}`);
+    }
+  });
+}
+```
+
+### Error: "Account does not exist" (SPL Tokens)
+
+The recipient doesn't have a token account for this mint.
+
+**Solution:**
+```typescript
+// Always use generateCompleteBulkSplTransactions instead of generateBulkSplTransactions
+// It automatically creates missing token accounts
+
+const { accountCreationTxs, transferTxs } = await generateCompleteBulkSplTransactions(
+  connection,
+  {
+    sender: sender.publicKey,
+    mint: mintAddress,
+    recipients: recipients,
+    fixedAmount: amount,
+  }
+);
+
+// Send account creation txs first, then transfer txs
+```
+
+### Error: "429 Too Many Requests"
+
+You're hitting RPC rate limits.
+
+**Solution:**
+```typescript
+// Add delays between transactions
+for (let i = 0; i < transactions.length; i++) {
+  const tx = transactions[i];
+
+  // ... sign and send transaction
+
+  // Wait between transactions to avoid rate limits
+  if (i < transactions.length - 1) {
+    await new Promise(resolve => setTimeout(resolve, 500)); // 500ms delay
+  }
+}
+
+// Or use a premium RPC provider like Helius, QuickNode, or Triton
+```
+
+### Error: "Transaction too large"
+
+Too many instructions in a single transaction.
+
+**Solution:**
+```typescript
+// Reduce instructionsPerTx parameter
+const transactions = generateBulkSolTransactions({
+  sender: sender.publicKey,
+  recipients: recipients,
+  fixedAmount: amount,
+  instructionsPerTx: 10, // Reduce from default 18
+  memo: 'Bulk transfer',
+});
+```
+
+### Insufficient Balance Check
+
+Always verify you have enough balance before sending.
+
+```typescript
+import { LAMPORTS_PER_SOL } from '@solana/web3.js';
+
+async function checkBalanceBeforeSend(
+  connection: Connection,
+  sender: PublicKey,
+  recipients: string[],
+  amountPerRecipient: number
+) {
+  const balance = await connection.getBalance(sender);
+
+  const totalTransferAmount = recipients.length * amountPerRecipient;
+  const estimatedTxCount = Math.ceil(recipients.length / 18);
+  const estimatedFees = estimatedTxCount * 5000; // 5000 lamports per tx
+  const totalRequired = totalTransferAmount + estimatedFees;
+
+  console.log(`Current balance: ${balance / LAMPORTS_PER_SOL} SOL`);
+  console.log(`Required amount: ${totalRequired / LAMPORTS_PER_SOL} SOL`);
+  console.log(`  - Transfers: ${totalTransferAmount / LAMPORTS_PER_SOL} SOL`);
+  console.log(`  - Estimated fees: ${estimatedFees / LAMPORTS_PER_SOL} SOL`);
+
+  if (balance < totalRequired) {
+    throw new Error(`Insufficient balance! Need ${(totalRequired - balance) / LAMPORTS_PER_SOL} more SOL`);
+  }
+
+  console.log('✅ Sufficient balance');
+  return true;
+}
+```
+
+### Retry Failed Transactions
+
+```typescript
+async function sendWithRetry(
+  connection: Connection,
+  transaction: Transaction,
+  signer: Keypair,
+  maxRetries: number = 3
+) {
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash();
+      transaction.recentBlockhash = blockhash;
+      transaction.feePayer = signer.publicKey;
+      transaction.sign(signer);
+
+      const signature = await connection.sendRawTransaction(transaction.serialize(), {
+        maxRetries: 2,
+      });
+
+      await connection.confirmTransaction({
+        signature,
+        blockhash,
+        lastValidBlockHeight,
+      });
+
+      return signature;
+    } catch (error) {
+      console.error(`Attempt ${attempt}/${maxRetries} failed:`, error.message);
+
+      if (attempt === maxRetries) {
+        throw error;
+      }
+
+      // Exponential backoff
+      const delay = Math.pow(2, attempt) * 1000;
+      await new Promise(resolve => setTimeout(resolve, delay));
+    }
+  }
+}
+```
+
+### Tracking Failed Transfers
+
+```typescript
+interface TransferResult {
+  index: number;
+  recipient: string;
+  amount: number;
+  signature?: string;
+  success: boolean;
+  error?: string;
+}
+
+async function sendWithTracking(
+  connection: Connection,
+  transactions: Transaction[],
+  sender: Keypair,
+  recipients: string[],
+  amounts: number[]
+) {
+  const results: TransferResult[] = [];
+  let currentRecipientIndex = 0;
+  const recipientsPerTx = 18;
+
+  for (let txIndex = 0; txIndex < transactions.length; txIndex++) {
+    const tx = transactions[txIndex];
+    const recipientsInThisTx = Math.min(recipientsPerTx, recipients.length - currentRecipientIndex);
+
+    try {
+      const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash();
+      tx.recentBlockhash = blockhash;
+      tx.feePayer = sender.publicKey;
+      tx.sign(sender);
+
+      const signature = await connection.sendRawTransaction(tx.serialize());
+      await connection.confirmTransaction({ signature, blockhash, lastValidBlockHeight });
+
+      // Mark all recipients in this transaction as successful
+      for (let i = 0; i < recipientsInThisTx; i++) {
+        const recipientIndex = currentRecipientIndex + i;
+        results.push({
+          index: recipientIndex,
+          recipient: recipients[recipientIndex],
+          amount: amounts[recipientIndex],
+          signature,
+          success: true,
+        });
+      }
+
+      console.log(`✅ Transaction ${txIndex + 1}/${transactions.length}: ${signature}`);
+    } catch (error) {
+      // Mark all recipients in this transaction as failed
+      for (let i = 0; i < recipientsInThisTx; i++) {
+        const recipientIndex = currentRecipientIndex + i;
+        results.push({
+          index: recipientIndex,
+          recipient: recipients[recipientIndex],
+          amount: amounts[recipientIndex],
+          success: false,
+          error: error.message,
+        });
+      }
+
+      console.error(`❌ Transaction ${txIndex + 1}/${transactions.length} failed:`, error.message);
+    }
+
+    currentRecipientIndex += recipientsInThisTx;
+  }
+
+  // Generate report
+  const successful = results.filter(r => r.success);
+  const failed = results.filter(r => !r.success);
+
+  console.log(`\n=== Transfer Report ===`);
+  console.log(`Total: ${results.length}`);
+  console.log(`Successful: ${successful.length}`);
+  console.log(`Failed: ${failed.length}`);
+
+  if (failed.length > 0) {
+    console.log(`\nFailed recipients:`);
+    failed.forEach(f => {
+      console.log(`  - ${f.recipient}: ${f.error}`);
+    });
+  }
+
+  return results;
+}
+```
+
+## Best Practices
+
+### 1. Always Test on Devnet First
+
+```typescript
+// Use devnet for testing
+const connection = new Connection('https://api.devnet.solana.com');
+
+// Request devnet SOL from faucet
+// https://faucet.solana.com/
+```
+
+### 2. Validate All Addresses Before Sending
+
+```typescript
+import { PublicKey } from '@solana/web3.js';
+
+function validateAddresses(addresses: string[]): boolean {
+  for (let i = 0; i < addresses.length; i++) {
+    try {
+      new PublicKey(addresses[i]);
+    } catch (error) {
+      console.error(`Invalid address at index ${i}: ${addresses[i]}`);
+      return false;
+    }
+  }
+  return true;
+}
+
+// Use before generating transactions
+if (!validateAddresses(recipients)) {
+  throw new Error('Invalid recipient addresses detected');
+}
+```
+
+### 3. Use Premium RPC for Production
+
+```typescript
+// Free public RPCs have rate limits
+// For production, use a premium provider:
+
+// Helius
+const connection = new Connection('https://mainnet.helius-rpc.com/?api-key=YOUR_KEY');
+
+// QuickNode
+const connection = new Connection('https://your-endpoint.quiknode.pro/YOUR_KEY/');
+
+// Triton
+const connection = new Connection('https://your-endpoint.rpcpool.com/YOUR_KEY');
+```
+
+### 4. Implement Transaction Monitoring
+
+```typescript
+async function monitorTransaction(
+  connection: Connection,
+  signature: string,
+  timeout: number = 60000
+) {
+  const start = Date.now();
+
+  while (Date.now() - start < timeout) {
+    const status = await connection.getSignatureStatus(signature);
+
+    if (status?.value?.confirmationStatus === 'confirmed' ||
+        status?.value?.confirmationStatus === 'finalized') {
+      console.log(`Transaction confirmed: ${signature}`);
+      return true;
+    }
+
+    if (status?.value?.err) {
+      console.error(`Transaction failed: ${signature}`, status.value.err);
+      return false;
+    }
+
+    await new Promise(resolve => setTimeout(resolve, 2000));
+  }
+
+  console.error(`Transaction timeout: ${signature}`);
+  return false;
+}
+```
+
+### 5. Calculate Total Costs Upfront
+
+```typescript
+function calculateTotalCost(
+  recipientCount: number,
+  amountPerRecipient: number,
+  instructionsPerTx: number = 18
+): {
+  totalTransferAmount: number;
+  totalFees: number;
+  totalCost: number;
+  transactionCount: number;
+} {
+  const transactionCount = Math.ceil(recipientCount / instructionsPerTx);
+  const totalTransferAmount = recipientCount * amountPerRecipient;
+  const totalFees = transactionCount * 5000; // lamports
+  const totalCost = totalTransferAmount + totalFees;
+
+  return {
+    totalTransferAmount,
+    totalFees,
+    totalCost,
+    transactionCount,
+  };
+}
+
+// Example usage
+const cost = calculateTotalCost(1000, 0.01 * LAMPORTS_PER_SOL);
+console.log(`Sending to 1000 recipients:`);
+console.log(`  Transactions: ${cost.transactionCount}`);
+console.log(`  Transfer total: ${cost.totalTransferAmount / LAMPORTS_PER_SOL} SOL`);
+console.log(`  Fees: ${cost.totalFees / LAMPORTS_PER_SOL} SOL`);
+console.log(`  Total cost: ${cost.totalCost / LAMPORTS_PER_SOL} SOL`);
+```
+
 ## Security Considerations
 
 - Always verify recipient addresses before sending
@@ -474,6 +1486,10 @@ interface IBulkSplTransferConfig {
 - Be aware of transaction fees (each transaction costs ~5000 lamports)
 - Token account creation costs rent (~0.00203928 SOL per account)
 - Consider rate limits when sending many transactions
+- Never hardcode private keys in your code - use environment variables or secure key management
+- Validate all input data (addresses, amounts) before processing
+- Keep a record of all transactions (signatures) for auditing
+- For large transfers, consider implementing a multi-signature setup for additional security
 
 ## License
 
